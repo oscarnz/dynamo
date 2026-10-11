@@ -46,6 +46,19 @@ async def _warmup_prefill_engine(engine: sgl.Engine, server_args) -> None:
     await warmup_prefill_engine(engine, server_args.disaggregation_bootstrap_port)
 
 
+async def _freeze_gc_after_engine_startup(engine: sgl.Engine) -> None:
+    """Exclude initialized, long-lived objects from later full-GC scans.
+
+    Match SGLang's HTTP-server startup optimization without disabling collection
+    of new objects. The tokenizer manager also dispatches the request to the
+    schedulers and detokenizer. Its return is not an acknowledgment from those
+    processes. Engine.freeze_gc() is synchronous and cannot run inside this
+    worker's already-running asyncio loop.
+    """
+    await engine.tokenizer_manager.freeze_gc()
+    logging.info("Requested SGLang post-startup garbage-collector freeze")
+
+
 async def init_decode(
     runtime: DistributedRuntime,
     config: Config,
@@ -175,6 +188,11 @@ async def init_decode(
         )
 
     try:
+        # Engine construction initializes model pools and captures CUDA graphs.
+        # Gateway children do not own that lifecycle; leave their shared-engine
+        # startup unchanged rather than freezing concurrently with sibling traffic.
+        if attached_engine is None:
+            await _freeze_gc_after_engine_startup(engine)
         gather_tasks = [
             generate_endpoint.serve_endpoint(
                 handler.generate,
@@ -337,6 +355,9 @@ async def init_prefill(
     ready_event = asyncio.Event()
 
     try:
+        # Prefill's explicit warmup must finish before long-lived objects freeze.
+        if attached_engine is None:
+            await _freeze_gc_after_engine_startup(engine)
         await asyncio.gather(
             generate_endpoint.serve_endpoint(
                 handler.generate,
