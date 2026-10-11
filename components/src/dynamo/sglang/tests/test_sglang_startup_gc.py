@@ -58,6 +58,7 @@ def startup(monkeypatch):
             use_sglang_tokenizer=False,
             endpoint_types="chat",
             custom_jinja_template=None,
+            freeze_gc_after_init=False,
         ),
         use_resolved_server_args=lambda value: value,
         serving_mode=DisaggregationMode.AGGREGATED,
