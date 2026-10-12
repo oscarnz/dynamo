@@ -59,10 +59,33 @@ def _supports_engine_generate(
     )
 
 
+def _gguf_model_dir(model_path: str) -> Optional[str]:
+    """Return the directory to register for a local single-file GGUF model.
+
+    SGLang serves a GGUF from the `.gguf` file itself and reads `config.json`
+    and the tokenizer files from the directory that file is in. `register_model`
+    builds the MDC (tokenizer, chat template, context length) from a directory
+    and rejects a file with "Model path is not a directory", so that directory
+    is the path to register.
+
+    Returns None when `model_path` is not a local `.gguf` file, or when there is
+    no `config.json` next to it to build the MDC from.
+    """
+    if not model_path.endswith(".gguf") or not os.path.isfile(model_path):
+        return None
+    model_dir = os.path.dirname(os.path.abspath(model_path))
+    if not os.path.isfile(os.path.join(model_dir, "config.json")):
+        return None
+    return model_dir
+
+
 def _register_model_source_path(
     engine: Optional[sgl.Engine], server_args: ServerArgs
 ) -> str:
     """Pick the path passed to `register_model` for MDC construction.
+
+    When `--model-path` is a local `.gguf` file with a `config.json` next to it,
+    the directory holding both is returned; see `_gguf_model_dir`.
 
     When `--model-path` is a remote URI (`s3://...`, `gs://...`), SGLang's
     `ModelConfig.maybe_pull_model_tokenizer_from_remote` (sglang/srt/configs/
@@ -83,16 +106,17 @@ def _register_model_source_path(
     the Rust-side HF download entirely (lib/bindings/python/rust/lib.rs:314)
     and don't need this rewrite.
     """
+    local_path = _gguf_model_dir(server_args.model_path) or server_args.model_path
     if engine is None:
-        return server_args.model_path
+        return local_path
     try:
         mc = engine.tokenizer_manager.model_config
     except AttributeError:
-        return server_args.model_path
+        return local_path
     weights = getattr(mc, "model_weights", None)
     if weights:
         return mc.model_path
-    return server_args.model_path
+    return local_path
 
 
 def _build_media_decoder_and_fetcher():

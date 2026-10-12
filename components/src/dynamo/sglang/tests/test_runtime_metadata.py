@@ -173,6 +173,76 @@ def test_runtime_config_without_engine_omits_token_budget(monkeypatch, caplog):
     assert "Failed to get runtime config" not in caplog.text
 
 
+def _gguf_model(tmp_path, *, with_config):
+    gguf_file = tmp_path / "model-Q4_K_M.gguf"
+    gguf_file.write_bytes(b"GGUF")
+    if with_config:
+        (tmp_path / "config.json").write_text("{}")
+    return gguf_file
+
+
+def test_register_source_path_is_gguf_directory(tmp_path):
+    # register_model builds the MDC from a directory and rejects a file, so a local .gguf with its
+    # config.json beside it must register that directory, with or without an engine.
+    from dynamo.sglang.register import _register_model_source_path
+
+    gguf_file = _gguf_model(tmp_path, with_config=True)
+    server_args = SimpleNamespace(model_path=str(gguf_file))
+    engine = SimpleNamespace(
+        tokenizer_manager=SimpleNamespace(
+            model_config=SimpleNamespace(model_weights=None, model_path=str(gguf_file))
+        )
+    )
+
+    assert _register_model_source_path(None, server_args) == str(tmp_path)
+    assert _register_model_source_path(engine, server_args) == str(tmp_path)
+    assert _register_model_source_path(SimpleNamespace(), server_args) == str(tmp_path)
+
+
+def test_register_source_path_keeps_gguf_without_config(tmp_path):
+    from dynamo.sglang.register import _register_model_source_path
+
+    gguf_file = _gguf_model(tmp_path, with_config=False)
+    server_args = SimpleNamespace(model_path=str(gguf_file))
+
+    assert _register_model_source_path(None, server_args) == str(gguf_file)
+
+
+@pytest.mark.parametrize("model_path", ["org/model", "org/model/model.gguf"])
+def test_register_source_path_keeps_non_local_paths(model_path):
+    from dynamo.sglang.register import _register_model_source_path
+
+    server_args = SimpleNamespace(model_path=model_path)
+
+    assert _register_model_source_path(None, server_args) == model_path
+
+
+def test_register_source_path_keeps_directory(tmp_path):
+    from dynamo.sglang.register import _register_model_source_path
+
+    _gguf_model(tmp_path, with_config=True)
+    server_args = SimpleNamespace(model_path=str(tmp_path))
+
+    assert _register_model_source_path(None, server_args) == str(tmp_path)
+
+
+def test_register_source_path_prefers_remote_pull_dir(tmp_path):
+    # The remote-URI rewrite still wins: model_weights set means SGLang already pulled the
+    # metadata to a local directory.
+    from dynamo.sglang.register import _register_model_source_path
+
+    server_args = SimpleNamespace(model_path="s3://bucket/model")
+    engine = SimpleNamespace(
+        tokenizer_manager=SimpleNamespace(
+            model_config=SimpleNamespace(
+                model_weights="s3://bucket/model", model_path=str(tmp_path)
+            )
+        )
+    )
+
+    assert _register_model_source_path(engine, server_args) == str(tmp_path)
+
+
 def test_hicache_publishes_native_offloading_capacity():
     server_args = SimpleNamespace(hicache_write_policy="write_back")
     assert get_hicache_native_offloading_capacity(
